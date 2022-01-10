@@ -30,6 +30,7 @@
 * Errors in C API no longer store or expose a std::exception_ptr. The comparison of realm_async_error_t now compares error code vs object identity. ([#5064](https://github.com/realm/realm-core/pull/5064))
 * The JSON output is slightly changed in the event of link cycles. Nobody is expected to rely on that.
 * Future::get_async() no longer requires its callback to be marked noexcept. ([#5130](https://github.com/realm/realm-core/pull/5130))
+* Send empty token in bind and refresh messages. ([#5151](https://github.com/realm/realm-core/pull/5151))
 
 ----------------------------------------------
 
