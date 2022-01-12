@@ -19,6 +19,7 @@
 #include <catch2/catch.hpp>
 
 #include "util/test_file.hpp"
+#include "util/event_loop.hpp"
 #include "util/index_helpers.hpp"
 
 #include <realm/object-store/binding_context.hpp>
@@ -1714,3 +1715,92 @@ TEST_CASE("list of embedded objects") {
         REQUIRE_THROWS(list.set_embedded(1));  // At index > size()
     }
 }
+
+#if REALM_ENABLE_SYNC
+namespace realm {
+class TestHelper {
+public:
+    static std::shared_ptr<Transaction> transaction(Realm& shared_realm)
+    {
+        return Realm::Internal::get_transaction_ref(shared_realm);
+    }
+};
+} // namespace realm
+
+TEST_CASE("list with unresolved links") {
+    TestSyncManager init_sync_manager({}, {false});
+    auto& server = init_sync_manager.sync_server();
+
+    SyncTestFile config1(init_sync_manager.app(), "shared");
+    config1.schema = Schema{
+        {"origin",
+         {{"_id", PropertyType::Int, Property::IsPrimary(true)},
+          {"array", PropertyType::Array | PropertyType::Object, "target"}}},
+        {"target", {{"_id", PropertyType::Int, Property::IsPrimary(true)}, {"value", PropertyType::Int}}},
+    };
+
+    SyncTestFile config2(init_sync_manager.app(), "shared");
+
+    auto r1 = Realm::get_shared_realm(config1);
+    auto r2 = Realm::get_shared_realm(config2);
+
+    auto coordinator = _impl::RealmCoordinator::get_coordinator(config2.path);
+    coordinator->enable_wait_for_change();
+
+    auto origin = r1->read_group().get_table("class_origin");
+    auto target = r1->read_group().get_table("class_target");
+    ColKey col_link = origin->get_column_key("array");
+    ColKey col_target_value = target->get_column_key("value");
+
+    r1->begin_transaction();
+
+    std::vector<ObjKey> target_keys;
+    for (int64_t i = 0; i < 10; ++i) {
+        target_keys.push_back(target->create_object_with_primary_key(i).set(col_target_value, i).get_key());
+    }
+    auto ll = origin->create_object_with_primary_key(100).get_linklist(col_link);
+    for (int i = 0; i < 10; ++i) {
+        ll.add(target_keys[i]);
+    }
+    target->invalidate_object(target_keys[2]);
+    r1->commit_transaction();
+
+    server.start();
+    util::EventLoop::main().run_until([&] {
+        if (auto table = r2->read_group().get_table("class_target")) {
+            return table->size() == 9;
+        }
+        return false;
+    });
+
+    auto write = [&r1](auto&& f) {
+        r1->begin_transaction();
+        f();
+        r1->commit_transaction();
+        advance_and_notify(*r1);
+    };
+
+    Obj obj = *r2->read_group().get_table("class_origin")->begin();
+    CollectionChangeSet change;
+    List lst(r2, obj, col_link);
+
+    auto require_change = [&] {
+        auto token = lst.add_notification_callback([&](CollectionChangeSet c, std::exception_ptr) {
+            change = c;
+        });
+        advance_and_notify(*r2);
+        return token;
+    };
+
+    SECTION("modifying the list sends a change notifications") {
+        auto token = require_change();
+        write([&] {
+            ll.remove(5);
+        });
+        coordinator->wait_for_change(TestHelper::transaction(*r2));
+        advance_and_notify(*r2);
+
+        REQUIRE_INDICES(change.deletions, 5);
+    }
+}
+#endif
