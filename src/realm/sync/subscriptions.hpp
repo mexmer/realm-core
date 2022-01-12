@@ -258,6 +258,9 @@ private:
     // To refresh a MutableSubscriptionSet, you should call commit() and call refresh() on its return value.
     void refresh() = delete;
 
+    // Throws is m_tr is in the wrong state.
+    void check_is_mutable() const;
+
     std::pair<iterator, bool> insert_or_assign_impl(iterator it, std::string name, std::string object_class_name,
                                                     std::string query_str);
 
